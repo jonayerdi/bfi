@@ -1,12 +1,12 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
+use std::num::Wrapping;
 
 /**
  * TODOS:
  *  - Return Result<bool,BrainfuckError> instead of panicking on error
- *  - Handle over/underflows in Add/Sub operations
- *  - On error: Dump registers, register, ip, instructions
  *  - Tests
+ *  - Debugging: IP to line/column, dump registers...
  */
 
 #[derive(Clone, Copy)]
@@ -138,8 +138,14 @@ where
                     self.register -= 1;
                 }
             },
-            Instruction::Add => self.registers[self.register] += 1,
-            Instruction::Sub => self.registers[self.register] -= 1,
+            Instruction::Add => {
+                let register = &mut self.registers[self.register];
+                *register = (Wrapping(*register) + Wrapping(1)).0;
+            },
+            Instruction::Sub => {
+                let register = &mut self.registers[self.register];
+                *register = (Wrapping(*register) - Wrapping(1)).0;
+            }
             Instruction::In => {
                 let mut data = [0];
                 if self.input.read_exact(&mut data).is_ok() {
