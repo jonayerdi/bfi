@@ -1,6 +1,5 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
-use std::num::Wrapping;
 
 /**
  * TODOS:
@@ -11,6 +10,10 @@ use std::num::Wrapping;
 #[derive(Debug)]
 pub enum BrainfuckError {
     IOError(std::io::Error),
+    RegisterUnderflowError,
+    RegisterOverallocationError,
+    OverflowError,
+    UnderflowError,
     MissingClosingBraceError,
     MissingOpeningBraceError,
 }
@@ -19,6 +22,10 @@ impl std::fmt::Display for BrainfuckError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             BrainfuckError::IOError(io_err) => write!(f, "IO error: {}", io_err),
+            BrainfuckError::RegisterUnderflowError => write!(f, "Register underflow on left shift"),
+            BrainfuckError::RegisterOverallocationError => write!(f, "Too many registers allocated"),
+            BrainfuckError::OverflowError => write!(f, "Addition overflow"),
+            BrainfuckError::UnderflowError => write!(f, "Substraction underflow"),
             BrainfuckError::MissingClosingBraceError => write!(f, "Found [ with no closing ]"),
             BrainfuckError::MissingOpeningBraceError => write!(f, "Found ] with no opening ["),
         }
@@ -32,6 +39,47 @@ impl std::error::Error for BrainfuckError {
             _ => None,
         }
     }
+}
+
+#[allow(dead_code)]
+pub enum LeftShiftMode {
+    Underflow,
+    Error,
+}
+
+impl Default for LeftShiftMode {
+    fn default() -> Self { LeftShiftMode::Underflow }
+}
+
+#[allow(dead_code)]
+pub enum ShiftMode {
+    Infinite,
+    Finite(usize),
+}
+
+impl Default for ShiftMode {
+    fn default() -> Self { ShiftMode::Infinite }
+}
+
+#[allow(dead_code)]
+pub enum OverflowMode {
+    Wrap,
+    Error,
+}
+
+impl Default for OverflowMode {
+    fn default() -> Self { OverflowMode::Wrap }
+}
+
+#[allow(dead_code)]
+pub enum InputErrorMode {
+    Value(u8),
+    Unchanged,
+    Error,
+}
+
+impl Default for InputErrorMode {
+    fn default() -> Self { InputErrorMode::Value(0) }
 }
 
 #[derive(Clone, Copy)]
@@ -116,6 +164,10 @@ where
     R: Read,
     W: Write,
 {
+    left_shift: LeftShiftMode,
+    shift: ShiftMode,
+    overflow: OverflowMode,
+    eof: InputErrorMode,
     ip: usize,
     register: usize,
     instructions: &'a [Instruction],
@@ -133,6 +185,10 @@ where
 {
     pub fn new(instructions: &'a [Instruction], input: R, output: W) -> Self {
         State {
+            left_shift: LeftShiftMode::default(),
+            shift: ShiftMode::default(),
+            overflow: OverflowMode::default(),
+            eof: InputErrorMode::default(),
             ip: 0,
             register: 0,
             instructions,
@@ -142,47 +198,140 @@ where
             output,
         }
     }
+    pub fn with_left_shift_mode(self, left_shift: LeftShiftMode) -> Self {
+        let mut this = self;
+        this.left_shift = left_shift;
+        this
+    }
+    pub fn with_shift_mode(self, shift: ShiftMode) -> Self {
+        let mut this = self;
+        this.shift = shift;
+        this
+    }
+    pub fn with_overflow_mode(self, overflow: OverflowMode) -> Self {
+        let mut this = self;
+        this.overflow = overflow;
+        this
+    }
+    pub fn with_eof_mode(self, eof: InputErrorMode) -> Self {
+        let mut this = self;
+        this.eof = eof;
+        this
+    }
     pub fn is_finished(&self) -> bool {
         self.ip == self.instructions.len()
+    }
+    pub fn left(&mut self) -> Result<(), BrainfuckError> {
+        if self.register == 0 {
+            match self.left_shift {
+                LeftShiftMode::Underflow => {
+                    match self.shift {
+                        ShiftMode::Infinite => {
+                            Ok(self.registers.push_front(0))
+                        }
+                        ShiftMode::Finite(max_register) => {
+                            if self.registers.len() < max_register {
+                                Ok(self.registers.push_front(0))
+                            } else {
+                                Err(BrainfuckError::RegisterOverallocationError)
+                            }
+                        }
+                    }
+                }
+                LeftShiftMode::Error => Err(BrainfuckError::RegisterUnderflowError),
+            }
+        } else {
+            self.register -= 1;
+            Ok(())
+        }
+    }
+    pub fn right(&mut self) -> Result<(), BrainfuckError> {
+        self.register += 1;
+        if self.register == self.registers.len() {
+            match self.shift {
+                ShiftMode::Infinite => {
+                    Ok(self.registers.push_back(0))
+                }
+                ShiftMode::Finite(max_register) => {
+                    if self.register < max_register {
+                        Ok(self.registers.push_back(0))
+                    } else {
+                        self.register -= 1;
+                        Err(BrainfuckError::RegisterOverallocationError)
+                    }
+                }
+            }
+        } else {
+            Ok(())
+        }
+    }
+    pub fn add(&mut self) -> Result<(), BrainfuckError> {
+        let register = &mut self.registers[self.register];
+        if let Some(result) = register.checked_add(1) {
+            *register = result;
+            Ok(())
+        } else {
+            match self.overflow {
+                OverflowMode::Wrap => {
+                    *register = u8::min_value();
+                    Ok(())
+                }
+                OverflowMode::Error => Err(BrainfuckError::OverflowError),
+            }
+        }
+    }
+    pub fn sub(&mut self) -> Result<(), BrainfuckError> {
+        let register = &mut self.registers[self.register];
+        if let Some(result) = register.checked_sub(1) {
+            *register = result;
+            Ok(())
+        } else {
+            match self.overflow {
+                OverflowMode::Wrap => {
+                    *register = u8::max_value();
+                    Ok(())
+                }
+                OverflowMode::Error => Err(BrainfuckError::UnderflowError),
+            }
+        }
+    }
+    pub fn read(&mut self) -> Result<(), BrainfuckError> {
+        let register = &mut self.registers[self.register];
+        let mut data = [0];
+        match self.input.read_exact(&mut data) {
+            Ok(()) => {
+                *register = data[0];
+                Ok(())
+            },
+            Err(io_err) => match self.eof {
+                InputErrorMode::Value(v) => {
+                    *register = v;
+                    Ok(())
+                },
+                InputErrorMode::Unchanged => Ok(()),
+                InputErrorMode::Error => Err(BrainfuckError::IOError(io_err)),
+            },
+        }
+    }
+    pub fn write(&mut self) -> Result<(), BrainfuckError> {
+        let register = self.registers[self.register];
+        if let Err(io_err) = self.output.write_all(&[register]) {
+            Err(BrainfuckError::IOError(io_err))
+        } else {
+            Ok(())
+        }
     }
     pub fn next(&mut self) -> Result<bool, BrainfuckError> {
         if self.is_finished() {
             return Ok(true);
         }
         match self.instructions[self.ip] {
-            Instruction::Right => {
-                self.register += 1;
-                if self.register == self.registers.len() {
-                    self.registers.push_back(0);
-                }
-            }
-            Instruction::Left => {
-                if self.register == 0 {
-                    self.registers.push_front(0);
-                } else {
-                    self.register -= 1;
-                }
-            }
-            Instruction::Add => {
-                let register = &mut self.registers[self.register];
-                *register = (Wrapping(*register) + Wrapping(1)).0;
-            }
-            Instruction::Sub => {
-                let register = &mut self.registers[self.register];
-                *register = (Wrapping(*register) - Wrapping(1)).0;
-            }
-            Instruction::In => {
-                let mut data = [0];
-                match self.input.read_exact(&mut data) {
-                    Ok(()) => self.registers[self.register] = data[0],
-                    Err(io_err) => return Err(BrainfuckError::IOError(io_err)),
-                }
-            }
-            Instruction::Out => {
-                if let Err(io_err) = self.output.write_all(&[self.registers[self.register]]) {
-                    return Err(BrainfuckError::IOError(io_err));
-                }
-            }
+            Instruction::Right => self.right()?,
+            Instruction::Left => self.left()?,
+            Instruction::Add => self.add()?,
+            Instruction::Sub => self.sub()?,
+            Instruction::In => self.read()?,
+            Instruction::Out => self.write()?,
             Instruction::Do => {
                 if self.registers[self.register] == 0 {
                     let mut dos = 1;
