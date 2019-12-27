@@ -3,11 +3,9 @@ use std::io::{Read, Write};
 
 /**
  * TODOS:
- *  - Allocate registers as left and right shifts happen
- *  - Allow registers to the left of the first one (with VecDeque?)
  *  - Return Result<bool,BrainfuckError> instead of panicking on error
- *  - On error: Dump registers, register, ip, instructions
  *  - Handle over/underflows in Add/Sub operations
+ *  - On error: Dump registers, register, ip, instructions
  *  - Tests
  */
 
@@ -97,7 +95,7 @@ where
     register: usize,
     instructions: &'a [Instruction],
     dos: Vec<usize>,
-    registers: Vec<u8>,
+    registers: VecDeque<u8>,
     input: R,
     output: W,
 }
@@ -114,7 +112,7 @@ where
             register: 0,
             instructions,
             dos: Vec::with_capacity(4),
-            registers: vec![0; 16],
+            registers: VecDeque::from(vec![0]),
             input,
             output,
         }
@@ -127,8 +125,19 @@ where
             return true;
         }
         match self.instructions[self.ip] {
-            Instruction::Right => self.register += 1,
-            Instruction::Left => self.register -= 1,
+            Instruction::Right => {
+                self.register += 1;
+                if self.register == self.registers.len() {
+                    self.registers.push_back(0);
+                }
+            },
+            Instruction::Left => {
+                if self.register == 0 {
+                    self.registers.push_front(0);
+                } else {
+                    self.register -= 1;
+                }
+            },
             Instruction::Add => self.registers[self.register] += 1,
             Instruction::Sub => self.registers[self.register] -= 1,
             Instruction::In => {
