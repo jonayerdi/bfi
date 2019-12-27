@@ -27,6 +27,9 @@ fn main() {
     let input = std::io::stdin();
     let output = std::io::stdout();
     let state = brainfuck::State::new(&instructions, input, output);
-    state.run();
+    if let Err(error) = state.run() {
+        println!();
+        error!("Runtime error: {}", error);
+    }
     println!();
 }

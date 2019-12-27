@@ -4,10 +4,35 @@ use std::num::Wrapping;
 
 /**
  * TODOS:
- *  - Return Result<bool,BrainfuckError> instead of panicking on error
  *  - Tests
  *  - Debugging: IP to line/column, dump registers...
  */
+
+#[derive(Debug)]
+pub enum BrainfuckError {
+    IOError(std::io::Error),
+    MissingClosingBraceError,
+    MissingOpeningBraceError,
+}
+
+impl std::fmt::Display for BrainfuckError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            BrainfuckError::IOError(io_err) => write!(f, "IO error: {}", io_err),
+            BrainfuckError::MissingClosingBraceError => write!(f, "Found [ with no closing ]"),
+            BrainfuckError::MissingOpeningBraceError => write!(f, "Found ] with no opening ["),
+        }
+    }
+}
+
+impl std::error::Error for BrainfuckError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            BrainfuckError::IOError(io_err) => Some(io_err),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 pub enum Instruction {
@@ -120,9 +145,9 @@ where
     pub fn is_finished(&self) -> bool {
         self.ip == self.instructions.len()
     }
-    pub fn next(&mut self) -> bool {
+    pub fn next(&mut self) -> Result<bool, BrainfuckError> {
         if self.is_finished() {
-            return true;
+            return Ok(true);
         }
         match self.instructions[self.ip] {
             Instruction::Right => {
@@ -130,47 +155,41 @@ where
                 if self.register == self.registers.len() {
                     self.registers.push_back(0);
                 }
-            },
+            }
             Instruction::Left => {
                 if self.register == 0 {
                     self.registers.push_front(0);
                 } else {
                     self.register -= 1;
                 }
-            },
+            }
             Instruction::Add => {
                 let register = &mut self.registers[self.register];
                 *register = (Wrapping(*register) + Wrapping(1)).0;
-            },
+            }
             Instruction::Sub => {
                 let register = &mut self.registers[self.register];
                 *register = (Wrapping(*register) - Wrapping(1)).0;
             }
             Instruction::In => {
                 let mut data = [0];
-                if self.input.read_exact(&mut data).is_ok() {
-                    self.registers[self.register] = data[0];
-                } else {
-                    panic!("Input error at IP={}", self.ip);
+                match self.input.read_exact(&mut data) {
+                    Ok(()) => self.registers[self.register] = data[0],
+                    Err(io_err) => return Err(BrainfuckError::IOError(io_err)),
                 }
             }
             Instruction::Out => {
-                if self
-                    .output
-                    .write_all(&[self.registers[self.register]])
-                    .is_err()
-                {
-                    panic!("Output error at IP={}", self.ip);
+                if let Err(io_err) = self.output.write_all(&[self.registers[self.register]]) {
+                    return Err(BrainfuckError::IOError(io_err));
                 }
             }
             Instruction::Do => {
                 if self.registers[self.register] == 0 {
-                    let old_ip = self.ip;
                     let mut dos = 1;
                     while dos != 0 {
                         self.ip += 1;
-                        if self.ip == self.instructions.len() {
-                            panic!("Found [ without closing ] at IP={}", old_ip);
+                        if self.is_finished() {
+                            return Err(BrainfuckError::MissingClosingBraceError);
                         }
                         match self.instructions[self.ip] {
                             Instruction::Do => dos += 1,
@@ -185,30 +204,27 @@ where
             Instruction::While => {
                 if let Some(ip) = self.dos.pop() {
                     self.ip = ip;
-                    return false;
+                    return Ok(false);
                 } else {
-                    panic!("Found ] without matching [ at IP={}", self.ip);
+                    return Err(BrainfuckError::MissingOpeningBraceError);
                 }
             }
         }
         self.ip += 1;
         if self.is_finished() {
-            let mut error_msg = String::new();
-            while let Some(ip) = self.dos.pop() {
-                let msg = format!("Found [ without closing ] at IP={}\n", ip);
-                error_msg.push_str(&msg);
+            if self.dos.is_empty() {
+                Ok(true)
+            } else {
+                Err(BrainfuckError::MissingClosingBraceError)
             }
-            if !error_msg.is_empty() {
-                panic!("{}", error_msg);
-            }
-            true
         } else {
-            false
+            Ok(false)
         }
     }
-    pub fn run(self) {
+    pub fn run(self) -> Result<(), BrainfuckError> {
         let mut state = self;
-        while !state.next() {}
+        while !state.next()? {}
+        Ok(())
     }
 }
 
