@@ -20,10 +20,13 @@ fn main() {
             error!("Error opening {}: {}", &args[1], e);
         }
     };
-    let instructions = brainfuck::instructions(file.bytes().map(|b| match b {
-        Ok(byte) => byte,
-        Err(e) => error!("IO error reading {}: {}", &args[1], e),
-    }));
+    let instructions = brainfuck::instructions(
+        file.bytes().map(|b| match b {
+            Ok(byte) => byte,
+            Err(e) => error!("IO error reading {}: {}", &args[1], e),
+        }),
+        true,
+    );
     let input = std::io::stdin();
     let output = std::io::stdout();
     let state = brainfuck::State::new(&instructions, input, output);
