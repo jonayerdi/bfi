@@ -9,6 +9,17 @@ macro_rules! error {
     })
 }
 
+/**
+ * TODOS:
+ *  - Select input/output files
+ *  - DebugInfo
+ *  - Config
+ *      - NegativeRegisterMode
+ *      - RegistersMode
+ *      - OverflowMode
+ *      - InputErrorMode
+ */
+
 fn main() {
     let args = std::env::args().collect::<Vec<_>>();
     if args.len() != 2 {
@@ -20,16 +31,14 @@ fn main() {
             error!("Error opening {}: {}", &args[1], e);
         }
     };
-    let instructions = brainfuck::instructions(
-        file.bytes().map(|b| match b {
+    let (instructions, debug_info) =
+        brainfuck::instructions_with_debug(file.bytes().map(|b| match b {
             Ok(byte) => byte,
             Err(e) => error!("IO error reading {}: {}", &args[1], e),
-        }),
-        true,
-    );
+        }));
     let input = std::io::stdin();
     let output = std::io::stdout();
-    let state = brainfuck::State::new(&instructions, input, output);
+    let state = brainfuck::State::new(&instructions, input, output).with_debug_info(debug_info);
     if let Err(error) = state.run() {
         println!();
         error!("Runtime error: {}", error);

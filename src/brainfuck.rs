@@ -1,11 +1,14 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 
 /**
  * TODOS:
- *  - dump_state
+ *  - Refactor: interpret on the go (instructions out of State, run(instructions: &str), state.next(instruction))
+ *  - ip, byte, line and column on error; newline sequence
  *  - Tests
  */
+
+type DebugInfo = HashMap<usize, (usize, usize)>;
 
 #[derive(Debug)]
 pub enum BrainfuckError {
@@ -92,7 +95,19 @@ impl Default for InputErrorMode {
     }
 }
 
-#[derive(Clone, Copy)]
+#[allow(dead_code)]
+pub enum OutputErrorMode {
+    Ignore,
+    Error,
+}
+
+impl Default for OutputErrorMode {
+    fn default() -> Self {
+        OutputErrorMode::Ignore
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
 pub enum Instruction {
     Dump, // Special instruction to dump state
     Right,
@@ -105,50 +120,10 @@ pub enum Instruction {
     While,
 }
 
-pub trait Encode {
-    fn encode(i: &Instruction) -> Self;
-}
-
-impl Encode for u8 {
-    fn encode(i: &Instruction) -> Self {
-        let c: char = Encode::encode(i);
-        c as u8
-    }
-}
-
-impl Encode for char {
-    fn encode(i: &Instruction) -> Self {
-        match i {
-            Instruction::Dump => '#',
-            Instruction::Right => '>',
-            Instruction::Left => '<',
-            Instruction::Add => '+',
-            Instruction::Sub => '-',
-            Instruction::In => ',',
-            Instruction::Out => '.',
-            Instruction::Do => '[',
-            Instruction::While => ']',
-        }
-    }
-}
-
-pub trait Decode {
-    fn decode(&self, dump_state: bool) -> Option<Instruction>;
-}
-
-impl Decode for u8 {
-    fn decode(&self, dump_state: bool) -> Option<Instruction> {
-        if self.is_ascii() {
-            Decode::decode(&(*self as char), dump_state)
-        } else {
-            None
-        }
-    }
-}
-
-impl Decode for char {
-    fn decode(&self, dump_state: bool) -> Option<Instruction> {
-        match self {
+#[allow(dead_code)]
+pub fn decode(byte: u8, dump_state: bool) -> Option<Instruction> {
+    if byte.is_ascii() {
+        match byte as char {
             '>' => Some(Instruction::Right),
             '<' => Some(Instruction::Left),
             '+' => Some(Instruction::Add),
@@ -160,16 +135,47 @@ impl Decode for char {
             '#' if dump_state => Some(Instruction::Dump),
             _ => None,
         }
+    } else {
+        None
     }
 }
 
 #[allow(dead_code)]
-pub fn instructions<I, D>(iter: I, dump_state: bool) -> Vec<Instruction>
+pub fn instructions<I>(iter: I) -> Vec<Instruction>
 where
-    I: Iterator<Item = D>,
-    D: Decode,
+    I: Iterator<Item = u8>,
 {
-    iter.filter_map(|c| c.decode(dump_state)).collect()
+    iter.filter_map(|byte| decode(byte, false)).collect()
+}
+
+#[allow(dead_code)]
+pub fn instructions_with_debug<I>(iter: I) -> (Vec<Instruction>, DebugInfo)
+where
+    I: Iterator<Item = u8>,
+{
+    let mut ip = 0;
+    let mut line = 0;
+    let mut column = 0;
+    let mut debug_info = HashMap::new();
+    let instructions = iter
+        .filter_map(|byte| {
+            let decoded = decode(byte, true);
+            if let Some(instruction) = decoded {
+                if instruction == Instruction::Dump {
+                    debug_info.insert(ip, (line, column));
+                }
+                ip += 1;
+            }
+            if byte == '\n' as u8 {
+                column = 0;
+                line += 1;
+            } else {
+                column += 1;
+            }
+            decoded
+        })
+        .collect();
+    (instructions, debug_info)
 }
 
 pub struct State<'a, R, W>
@@ -181,6 +187,8 @@ where
     cfg_registers: RegistersMode,
     cfg_overflow: OverflowMode,
     cfg_input_error: InputErrorMode,
+    cfg_output_error: OutputErrorMode,
+    debug_info: DebugInfo,
     ip: usize,
     register: usize,
     instructions: &'a [Instruction],
@@ -198,10 +206,12 @@ where
 {
     pub fn new(instructions: &'a [Instruction], input: R, output: W) -> Self {
         State {
-            cfg_negative_register: NegativeRegisterMode::default(),
-            cfg_registers: RegistersMode::default(),
-            cfg_overflow: OverflowMode::default(),
-            cfg_input_error: InputErrorMode::default(),
+            cfg_negative_register: Default::default(),
+            cfg_registers: Default::default(),
+            cfg_overflow: Default::default(),
+            cfg_input_error: Default::default(),
+            cfg_output_error: Default::default(),
+            debug_info: Default::default(),
             ip: 0,
             register: 0,
             instructions,
@@ -232,6 +242,16 @@ where
         this.cfg_input_error = cfg_input_error;
         this
     }
+    pub fn with_output_error_mode(self, cfg_output_error: OutputErrorMode) -> Self {
+        let mut this = self;
+        this.cfg_output_error = cfg_output_error;
+        this
+    }
+    pub fn with_debug_info(self, debug_info: DebugInfo) -> Self {
+        let mut this = self;
+        this.debug_info = debug_info;
+        this
+    }
     pub fn is_finished(&self) -> bool {
         self.ip == self.instructions.len()
     }
@@ -243,8 +263,12 @@ where
     }
     pub fn dump_state(&self) -> usize {
         println!();
-        // TODO: line and column
-        println!("IP={} (line {}, column {})", self.ip, '?', '?');
+        print!("IP={} ", self.ip);
+        if let Some((line, column)) = self.debug_info.get(&self.ip) {
+            println!("(line {}, column {})", line, column);
+        } else {
+            println!("(line ?, column ?)");
+        }
         print!("Registers: |");
         for (register, value) in self.registers.iter().enumerate() {
             if self.register == register {
@@ -260,7 +284,7 @@ where
             match self.cfg_negative_register {
                 NegativeRegisterMode::Allow => {
                     if self.can_allocate_register() {
-                        self.registers.push_front(0); 
+                        self.registers.push_front(0);
                     } else {
                         return Err(BrainfuckError::RegisterOverallocationError);
                     }
@@ -324,7 +348,10 @@ where
     pub fn write(&mut self) -> Result<usize, BrainfuckError> {
         let register = self.registers[self.register];
         if let Err(io_err) = self.output.write_all(&[register]) {
-            return Err(BrainfuckError::IOError(io_err));
+            match self.cfg_output_error {
+                OutputErrorMode::Ignore => {}
+                OutputErrorMode::Error => return Err(BrainfuckError::IOError(io_err)),
+            }
         }
         Ok(self.ip + 1)
     }
