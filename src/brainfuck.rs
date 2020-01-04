@@ -3,46 +3,64 @@ use std::io::{Read, Write};
 
 /**
  * TODOS:
- *  - Debug info on error...
- *  - instructions_with_debug newlines: Windows...
- *  - next(instruction) for self-modifying code?
  *  - Tests
  */
 
 type DebugInfo = Vec<(usize, usize)>;
 
 #[derive(Debug)]
-pub enum Error {
-    InputError(std::io::Error),
-    OutputError(std::io::Error),
-    RegisterUnderflowError,
-    RegisterOverallocationError,
-    OverflowError,
-    UnderflowError,
-    MissingClosingBraceError,
-    MissingOpeningBraceError,
+pub enum ErrorType {
+    Input(std::io::Error),
+    Output(std::io::Error),
+    RegisterUnderflow,
+    RegisterOverallocation,
+    ArithmeticOverflow,
+    ArithmeticUnderflow,
+    MissingClosingBrace,
+    MissingOpeningBrace,
+}
+
+impl std::fmt::Display for ErrorType {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            ErrorType::Input(io_err) => write!(f, "Input error: {}", io_err),
+            ErrorType::Output(io_err) => write!(f, "Output error: {}", io_err),
+            ErrorType::RegisterUnderflow => write!(f, "Register underflow on left shift"),
+            ErrorType::RegisterOverallocation => write!(f, "Too many registers allocated"),
+            ErrorType::ArithmeticOverflow => write!(f, "Addition overflow"),
+            ErrorType::ArithmeticUnderflow => write!(f, "Substraction underflow"),
+            ErrorType::MissingClosingBrace => write!(f, "Found [ with no closing ]"),
+            ErrorType::MissingOpeningBrace => write!(f, "Found ] with no opening ["),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Error {
+    error_type: ErrorType,
+    ip: usize,
+    debug_info: Option<(usize, usize)>,
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Error::InputError(io_err) => write!(f, "Input error: {}", io_err),
-            Error::OutputError(io_err) => write!(f, "Output error: {}", io_err),
-            Error::RegisterUnderflowError => write!(f, "Register underflow on left shift"),
-            Error::RegisterOverallocationError => write!(f, "Too many registers allocated"),
-            Error::OverflowError => write!(f, "Addition overflow"),
-            Error::UnderflowError => write!(f, "Substraction underflow"),
-            Error::MissingClosingBraceError => write!(f, "Found [ with no closing ]"),
-            Error::MissingOpeningBraceError => write!(f, "Found ] with no opening ["),
+        if let Some((line, column)) = self.debug_info {
+            write!(
+                f,
+                "{} at IP={} (line {}, column {})",
+                self.error_type, self.ip, line, column
+            )
+        } else {
+            write!(f, "{} at IP={}", self.error_type, self.ip)
         }
     }
 }
 
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Error::InputError(io_err) => Some(io_err),
-            Error::OutputError(io_err) => Some(io_err),
+        match &self.error_type {
+            ErrorType::Input(io_err) => Some(io_err),
+            ErrorType::Output(io_err) => Some(io_err),
             _ => None,
         }
     }
@@ -171,7 +189,7 @@ where
             } else if c == '\n' {
                 column = 0;
                 line += 1;
-            } else {
+            } else if c != '\r' {
                 column += 1;
             }
             decoded
@@ -207,6 +225,16 @@ where
     R: Read,
     W: Write,
 {
+    fn error(&self, error_type: ErrorType) -> Error {
+        Error {
+            error_type,
+            ip: self.ip,
+            debug_info: match self.debug_info.get(self.ip) {
+                Some(value) => Some(*value),
+                None => None,
+            },
+        }
+    }
     pub fn new(instructions: &'a [Instruction], input: R, output: W) -> Self {
         State {
             cfg_negative_register: Default::default(),
@@ -309,10 +337,10 @@ where
                     if self.can_allocate_register() {
                         self.registers.push_front(0);
                     } else {
-                        return Err(Error::RegisterOverallocationError);
+                        return Err(self.error(ErrorType::RegisterOverallocation));
                     }
                 }
-                NegativeRegisterMode::Error => return Err(Error::RegisterUnderflowError),
+                NegativeRegisterMode::Error => return Err(self.error(ErrorType::RegisterUnderflow)),
             }
         } else {
             self.register -= 1;
@@ -326,7 +354,7 @@ where
                 self.registers.push_back(0);
             } else {
                 self.register -= 1;
-                return Err(Error::RegisterOverallocationError);
+                return Err(self.error(ErrorType::RegisterOverallocation));
             }
         }
         Ok(self.ip + 1)
@@ -338,7 +366,7 @@ where
         } else {
             match self.cfg_overflow {
                 OverflowMode::Wrap => u8::min_value(),
-                OverflowMode::Error => return Err(Error::OverflowError),
+                OverflowMode::Error => return Err(self.error(ErrorType::ArithmeticOverflow)),
             }
         };
         Ok(self.ip + 1)
@@ -350,7 +378,7 @@ where
         } else {
             match self.cfg_overflow {
                 OverflowMode::Wrap => u8::max_value(),
-                OverflowMode::Error => return Err(Error::UnderflowError),
+                OverflowMode::Error => return Err(self.error(ErrorType::ArithmeticUnderflow)),
             }
         };
         Ok(self.ip + 1)
@@ -363,7 +391,7 @@ where
             Err(io_err) => match self.cfg_input_error {
                 InputErrorMode::Value(value) => value,
                 InputErrorMode::Unchanged => *register,
-                InputErrorMode::Error => return Err(Error::InputError(io_err)),
+                InputErrorMode::Error => return Err(self.error(ErrorType::Input(io_err))),
             },
         };
         Ok(self.ip + 1)
@@ -373,7 +401,7 @@ where
         if let Err(io_err) = self.output.write_all(&[register]) {
             match self.cfg_output_error {
                 OutputErrorMode::Ignore => {}
-                OutputErrorMode::Error => return Err(Error::OutputError(io_err)),
+                OutputErrorMode::Error => return Err(self.error(ErrorType::Output(io_err))),
             }
         }
         Ok(self.ip + 1)
@@ -382,7 +410,7 @@ where
         if self.registers[self.register] == 0 {
             match self.loop_end_ip(self.ip) {
                 Some(ip) => Ok(ip + 1),
-                None => Err(Error::MissingClosingBraceError),
+                None => Err(self.error(ErrorType::MissingClosingBrace)),
             }
         } else {
             self.dos.push(self.ip);
@@ -394,7 +422,7 @@ where
             self.loop_end_cache.entry(ip).or_insert(self.ip);
             Ok(ip)
         } else {
-            Err(Error::MissingOpeningBraceError)
+            Err(self.error(ErrorType::MissingOpeningBrace))
         }
     }
     pub fn next(&mut self) -> Result<bool, Error> {
@@ -416,7 +444,7 @@ where
             if self.dos.is_empty() {
                 Ok(true)
             } else {
-                Err(Error::MissingClosingBraceError)
+                Err(self.error(ErrorType::MissingClosingBrace))
             }
         } else {
             Ok(false)
@@ -433,8 +461,154 @@ where
 mod tests {
     use super::*;
 
+    fn run_program(
+        code: &str,
+        input: &str,
+        dump_state: bool,
+        debug_info: bool,
+    ) -> Result<Vec<u8>, Error> {
+        let mut output_data = Vec::new();
+        let output = std::io::Cursor::new(&mut output_data);
+        let (instructions, debug_info) = if debug_info {
+            instructions_with_debug(code.chars(), dump_state)
+        } else {
+            (instructions(code.bytes(), dump_state), Default::default())
+        };
+        let state = State::new(&instructions, input.as_bytes(), output).with_debug_info(debug_info);
+        match state.run() {
+            Ok(()) => Ok(output_data),
+            Err(error) => Err(error),
+        }
+    }
+
     #[test]
-    fn it_works() {
+    fn helloworld_single_register() {
+        let text = "hello world!";
+        let mut code = String::new();
+        let mut register = 0;
+        for &byte in text.as_bytes() {
+            let diff = byte as i16 - register as i16;
+            if diff >= 0 {
+                (0..diff).for_each(|_| code.push('+'));
+            } else {
+                (0..-diff).for_each(|_| code.push('-'));
+            }
+            code.push('.');
+            register = byte;
+        }
+        match run_program(&code, "", false, false) {
+            Ok(output) => assert_eq!(text.as_bytes(), output.as_slice()),
+            Err(error) => panic!("{}", error),
+        }
+    }
+
+    #[test]
+    fn helloworld_multiregister() {
+        let text = "hello world!";
+        let mut code = String::new();
+        for &byte in text.as_bytes() {
+            (0..byte).for_each(|_| code.push('+'));
+            code.push_str(".>");
+        }
+        match run_program(&code, "", false, false) {
+            Ok(output) => assert_eq!(text.as_bytes(), output.as_slice()),
+            Err(error) => panic!("{}", error),
+        }
+    }
+
+    #[test]
+    fn echo() {
+        let code = ",[.,]";
+        let inputs = [
+            "hello",
+            "-> hello world! <-",
+            "",
+            "123\n456",
+            "123\n\r456",
+            "سلام دنیا",
+            "안녕 세상",
+            "\r\n\thél\\lo",
+        ];
+        for input in inputs.iter() {
+            match run_program(code, *input, false, false) {
+                Ok(output) => assert_eq!(input.as_bytes(), output.as_slice()),
+                Err(error) => panic!("{}", error),
+            }
+        }
+    }
+
+    #[test]
+    fn reverse() {
+        // TODO
+    }
+
+    #[test]
+    fn qsort() {
+        // TODO
+    }
+
+    #[test]
+    fn dump_state() {
+        // TODO
+    }
+
+    #[test]
+    fn no_dump_state() {
+        // TODO
+    }
+
+    #[test]
+    fn no_debug_info() {
+        // TODO
+    }
+
+    #[test]
+    fn debug_info_lf() {
+        // TODO
+    }
+
+    #[test]
+    fn debug_info_crlf() {
+        // TODO
+    }
+
+    #[test]
+    fn input_error() {
+        // TODO
+    }
+
+    #[test]
+    fn output_error() {
+        // TODO
+    }
+
+    #[test]
+    fn register_underflow_error() {
+        // TODO
+    }
+
+    #[test]
+    fn register_overallocation_error() {
+        // TODO
+    }
+
+    #[test]
+    fn arithmetic_overflow_error() {
+        // TODO
+    }
+
+    #[test]
+    fn arithmetic_underflow_error() {
+        // TODO
+    }
+
+    #[test]
+    fn missing_closing_brace_error() {
+        // TODO
+    }
+
+    #[test]
+    fn missing_opening_brace_error() {
         // TODO
     }
 }
