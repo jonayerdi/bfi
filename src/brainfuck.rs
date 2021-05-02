@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 
 /**
@@ -127,7 +127,7 @@ impl Default for OutputErrorMode {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Instruction {
     Dump, // Special instruction to dump state
     Right,
@@ -136,8 +136,8 @@ pub enum Instruction {
     Sub,
     In,
     Out,
-    Do,
-    While,
+    LoopBegin,
+    LoopEnd,
 }
 
 #[allow(dead_code)]
@@ -149,8 +149,8 @@ pub fn decode_char(c: char, dump_state: bool) -> Option<Instruction> {
         '-' => Some(Instruction::Sub),
         ',' => Some(Instruction::In),
         '.' => Some(Instruction::Out),
-        '[' => Some(Instruction::Do),
-        ']' => Some(Instruction::While),
+        '[' => Some(Instruction::LoopBegin),
+        ']' => Some(Instruction::LoopEnd),
         '#' if dump_state => Some(Instruction::Dump),
         _ => None,
     }
@@ -178,8 +178,8 @@ pub fn instructions_with_debug<I>(iter: I, dump_state: bool) -> (Vec<Instruction
 where
     I: Iterator<Item = char>,
 {
-    let mut line = 0;
-    let mut column = 0;
+    let mut line = 1;
+    let mut column = 1;
     let mut debug_info = Vec::new();
     let instructions = iter
         .filter_map(|c| {
@@ -187,7 +187,7 @@ where
             if decoded.is_some() {
                 debug_info.push((line, column));
             } else if c == '\n' {
-                column = 0;
+                column = 1;
                 line += 1;
             } else if c != '\r' {
                 column += 1;
@@ -209,11 +209,10 @@ where
     cfg_input_error: InputErrorMode,
     cfg_output_error: OutputErrorMode,
     debug_info: DebugInfo,
-    loop_end_cache: HashMap<usize, usize>,
     instructions: &'a [Instruction],
     ip: usize,
     register: usize,
-    dos: Vec<usize>,
+    loop_beginnings: Vec<usize>,
     registers: VecDeque<u8>,
     input: R,
     output: W,
@@ -243,11 +242,10 @@ where
             cfg_input_error: Default::default(),
             cfg_output_error: Default::default(),
             debug_info: Default::default(),
-            loop_end_cache: Default::default(),
             instructions,
             ip: 0,
             register: 0,
-            dos: Vec::with_capacity(4),
+            loop_beginnings: Vec::with_capacity(4),
             registers: VecDeque::from(vec![0]),
             input,
             output,
@@ -293,28 +291,7 @@ where
             RegistersMode::Finite(max_register) => self.registers.len() < max_register,
         }
     }
-    pub fn loop_end_ip(&mut self, ip: usize) -> Option<usize> {
-        if let Some(cached_ip) = self.loop_end_cache.get(&ip) {
-            Some(*cached_ip)
-        } else {
-            let mut current_ip = ip;
-            let mut dos = 1;
-            while dos != 0 {
-                current_ip += 1;
-                if ip == self.instructions.len() {
-                    return None;
-                }
-                match self.instructions[current_ip] {
-                    Instruction::Do => dos += 1,
-                    Instruction::While => dos -= 1,
-                    _ => {}
-                }
-            }
-            self.loop_end_cache.insert(ip, current_ip);
-            Some(current_ip)
-        }
-    }
-    pub fn dump_state(&self) -> usize {
+    pub fn dump_state(&mut self) {
         println!();
         print!("IP={}", self.ip);
         if let Some((line, column)) = self.debug_info.get(self.ip) {
@@ -328,9 +305,9 @@ where
             print!("{:02X}|", value);
         }
         println!();
-        self.ip + 1
+        self.ip += 1
     }
-    pub fn left(&mut self) -> Result<usize, Error> {
+    pub fn left(&mut self) -> Result<(), Error> {
         if self.register == 0 {
             match self.cfg_negative_register {
                 NegativeRegisterMode::Allow => {
@@ -345,9 +322,10 @@ where
         } else {
             self.register -= 1;
         }
-        Ok(self.ip + 1)
+        self.ip += 1;
+        Ok(())
     }
-    pub fn right(&mut self) -> Result<usize, Error> {
+    pub fn right(&mut self) -> Result<(), Error> {
         self.register += 1;
         if self.register == self.registers.len() {
             if self.can_allocate_register() {
@@ -357,9 +335,10 @@ where
                 return Err(self.error(ErrorType::RegisterOverallocation));
             }
         }
-        Ok(self.ip + 1)
+        self.ip += 1;
+        Ok(())
     }
-    pub fn add(&mut self) -> Result<usize, Error> {
+    pub fn add(&mut self) -> Result<(), Error> {
         let register = &mut self.registers[self.register];
         *register = if let Some(result) = register.checked_add(1) {
             result
@@ -369,9 +348,10 @@ where
                 OverflowMode::Error => return Err(self.error(ErrorType::ArithmeticOverflow)),
             }
         };
-        Ok(self.ip + 1)
+        self.ip += 1;
+        Ok(())
     }
-    pub fn sub(&mut self) -> Result<usize, Error> {
+    pub fn sub(&mut self) -> Result<(), Error> {
         let register = &mut self.registers[self.register];
         *register = if let Some(result) = register.checked_sub(1) {
             result
@@ -381,9 +361,10 @@ where
                 OverflowMode::Error => return Err(self.error(ErrorType::ArithmeticUnderflow)),
             }
         };
-        Ok(self.ip + 1)
+        self.ip += 1;
+        Ok(())
     }
-    pub fn read(&mut self) -> Result<usize, Error> {
+    pub fn read(&mut self) -> Result<(), Error> {
         let register = &mut self.registers[self.register];
         let mut data = [0];
         *register = match self.input.read_exact(&mut data) {
@@ -394,9 +375,10 @@ where
                 InputErrorMode::Error => return Err(self.error(ErrorType::Input(io_err))),
             },
         };
-        Ok(self.ip + 1)
+        self.ip += 1;
+        Ok(())
     }
-    pub fn write(&mut self) -> Result<usize, Error> {
+    pub fn write(&mut self) -> Result<(), Error> {
         let register = self.registers[self.register];
         if let Err(io_err) = self.output.write_all(&[register]) {
             match self.cfg_output_error {
@@ -404,23 +386,38 @@ where
                 OutputErrorMode::Error => return Err(self.error(ErrorType::Output(io_err))),
             }
         }
-        Ok(self.ip + 1)
+        self.ip += 1;
+        Ok(())
     }
-    pub fn loop_begin(&mut self) -> Result<usize, Error> {
-        if self.registers[self.register] == 0 {
-            match self.loop_end_ip(self.ip) {
-                Some(ip) => Ok(ip + 1),
-                None => Err(self.error(ErrorType::MissingClosingBrace)),
-            }
+    pub fn loop_begin(&mut self) -> Result<(), Error> {
+        if self.registers[self.register] != 0 {
+            // Enter loop
+            self.loop_beginnings.push(self.ip);
+            self.ip += 1;
+            Ok(())
         } else {
-            self.dos.push(self.ip);
-            Ok(self.ip + 1)
+            // Skip to loop end
+            let mut loop_begins = 1;
+            for ip in self.ip + 1..self.instructions.len() {
+                match self.instructions[ip] {
+                    Instruction::LoopBegin => loop_begins += 1,
+                    Instruction::LoopEnd => {
+                        loop_begins -= 1;
+                        if loop_begins == 0 {
+                            self.ip = ip + 1;
+                            return Ok(());
+                        }
+                    },
+                    _ => {},
+                };
+            }
+            Err(self.error(ErrorType::MissingClosingBrace))
         }
     }
-    pub fn loop_end(&mut self) -> Result<usize, Error> {
-        if let Some(ip) = self.dos.pop() {
-            self.loop_end_cache.entry(ip).or_insert(self.ip);
-            Ok(ip)
+    pub fn loop_end(&mut self) -> Result<(), Error> {
+        if let Some(loop_begin_ip) = self.loop_beginnings.pop() {
+            self.ip = loop_begin_ip;
+            Ok(())
         } else {
             Err(self.error(ErrorType::MissingOpeningBrace))
         }
@@ -429,7 +426,7 @@ where
         if self.is_finished() {
             return Ok(true);
         }
-        self.ip = match self.instructions[self.ip] {
+        match self.instructions[self.ip] {
             Instruction::Dump => self.dump_state(),
             Instruction::Right => self.right()?,
             Instruction::Left => self.left()?,
@@ -437,11 +434,11 @@ where
             Instruction::Sub => self.sub()?,
             Instruction::In => self.read()?,
             Instruction::Out => self.write()?,
-            Instruction::Do => self.loop_begin()?,
-            Instruction::While => self.loop_end()?,
+            Instruction::LoopBegin => self.loop_begin()?,
+            Instruction::LoopEnd => self.loop_end()?,
         };
         if self.is_finished() {
-            if self.dos.is_empty() {
+            if self.loop_beginnings.is_empty() {
                 Ok(true)
             } else {
                 Err(self.error(ErrorType::MissingClosingBrace))
@@ -450,9 +447,8 @@ where
             Ok(false)
         }
     }
-    pub fn run(self) -> Result<(), Error> {
-        let mut state = self;
-        while !state.next()? {}
+    pub fn run(mut self) -> Result<(), Error> {
+        while !self.next()? {}
         Ok(())
     }
 }
