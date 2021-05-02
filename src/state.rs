@@ -1,3 +1,5 @@
+use super::config::{self, Config};
+use super::decode::{DebugInfo, Instruction};
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 
@@ -5,8 +7,6 @@ use std::io::{Read, Write};
  * TODOS:
  *  - Tests
  */
-
-type DebugInfo = Vec<(usize, usize)>;
 
 #[derive(Debug)]
 pub enum ErrorType {
@@ -66,148 +66,12 @@ impl std::error::Error for Error {
     }
 }
 
-#[allow(dead_code)]
-pub enum NegativeRegisterMode {
-    Allow,
-    Error,
-}
-
-impl Default for NegativeRegisterMode {
-    fn default() -> Self {
-        NegativeRegisterMode::Allow
-    }
-}
-
-#[allow(dead_code)]
-pub enum RegistersMode {
-    Infinite,
-    Finite(usize),
-}
-
-impl Default for RegistersMode {
-    fn default() -> Self {
-        RegistersMode::Infinite
-    }
-}
-
-#[allow(dead_code)]
-pub enum OverflowMode {
-    Wrap,
-    Error,
-}
-
-impl Default for OverflowMode {
-    fn default() -> Self {
-        OverflowMode::Wrap
-    }
-}
-
-#[allow(dead_code)]
-pub enum InputErrorMode {
-    Value(u8),
-    Unchanged,
-    Error,
-}
-
-impl Default for InputErrorMode {
-    fn default() -> Self {
-        InputErrorMode::Value(0)
-    }
-}
-
-#[allow(dead_code)]
-pub enum OutputErrorMode {
-    Ignore,
-    Error,
-}
-
-impl Default for OutputErrorMode {
-    fn default() -> Self {
-        OutputErrorMode::Ignore
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Instruction {
-    Dump, // Special instruction to dump state
-    Right,
-    Left,
-    Add,
-    Sub,
-    In,
-    Out,
-    LoopBegin,
-    LoopEnd,
-}
-
-#[allow(dead_code)]
-pub fn decode_char(c: char, dump_state: bool) -> Option<Instruction> {
-    match c {
-        '>' => Some(Instruction::Right),
-        '<' => Some(Instruction::Left),
-        '+' => Some(Instruction::Add),
-        '-' => Some(Instruction::Sub),
-        ',' => Some(Instruction::In),
-        '.' => Some(Instruction::Out),
-        '[' => Some(Instruction::LoopBegin),
-        ']' => Some(Instruction::LoopEnd),
-        '#' if dump_state => Some(Instruction::Dump),
-        _ => None,
-    }
-}
-
-#[allow(dead_code)]
-pub fn decode(byte: u8, dump_state: bool) -> Option<Instruction> {
-    if byte.is_ascii() {
-        decode_char(byte as char, dump_state)
-    } else {
-        None
-    }
-}
-
-#[allow(dead_code)]
-pub fn instructions<I>(iter: I, dump_state: bool) -> Vec<Instruction>
-where
-    I: Iterator<Item = u8>,
-{
-    iter.filter_map(|byte| decode(byte, dump_state)).collect()
-}
-
-#[allow(dead_code)]
-pub fn instructions_with_debug<I>(iter: I, dump_state: bool) -> (Vec<Instruction>, DebugInfo)
-where
-    I: Iterator<Item = char>,
-{
-    let mut line = 1;
-    let mut column = 1;
-    let mut debug_info = Vec::new();
-    let instructions = iter
-        .filter_map(|c| {
-            let decoded = decode_char(c, dump_state);
-            if decoded.is_some() {
-                debug_info.push((line, column));
-            } else if c == '\n' {
-                column = 1;
-                line += 1;
-            } else if c != '\r' {
-                column += 1;
-            }
-            decoded
-        })
-        .collect();
-    (instructions, debug_info)
-}
-
 pub struct State<'a, R, W>
 where
     R: Read,
     W: Write,
 {
-    cfg_negative_register: NegativeRegisterMode,
-    cfg_registers: RegistersMode,
-    cfg_overflow: OverflowMode,
-    cfg_input_error: InputErrorMode,
-    cfg_output_error: OutputErrorMode,
+    cfg: Config,
     debug_info: DebugInfo,
     instructions: &'a [Instruction],
     ip: usize,
@@ -236,11 +100,7 @@ where
     }
     pub fn new(instructions: &'a [Instruction], input: R, output: W) -> Self {
         State {
-            cfg_negative_register: Default::default(),
-            cfg_registers: Default::default(),
-            cfg_overflow: Default::default(),
-            cfg_input_error: Default::default(),
-            cfg_output_error: Default::default(),
+            cfg: Default::default(),
             debug_info: Default::default(),
             instructions,
             ip: 0,
@@ -251,31 +111,29 @@ where
             output,
         }
     }
-    pub fn with_negative_register_mode(self, cfg_negative_register: NegativeRegisterMode) -> Self {
-        let mut this = self;
-        this.cfg_negative_register = cfg_negative_register;
-        this
+    pub fn with_negative_register_mode(
+        mut self,
+        negative_register: config::NegativeRegisterMode,
+    ) -> Self {
+        self.cfg.negative_register = negative_register;
+        self
     }
-    pub fn with_registers_mode(self, cfg_registers: RegistersMode) -> Self {
-        let mut this = self;
-        this.cfg_registers = cfg_registers;
-        this
+    pub fn with_registers_mode(mut self, registers: config::RegistersMode) -> Self {
+        self.cfg.registers = registers;
+        self
     }
 
-    pub fn with_overflow_mode(self, cfg_overflow: OverflowMode) -> Self {
-        let mut this = self;
-        this.cfg_overflow = cfg_overflow;
-        this
+    pub fn with_overflow_mode(mut self, overflow: config::OverflowMode) -> Self {
+        self.cfg.overflow = overflow;
+        self
     }
-    pub fn with_input_error_mode(self, cfg_input_error: InputErrorMode) -> Self {
-        let mut this = self;
-        this.cfg_input_error = cfg_input_error;
-        this
+    pub fn with_input_error_mode(mut self, input_error: config::InputErrorMode) -> Self {
+        self.cfg.input_error = input_error;
+        self
     }
-    pub fn with_output_error_mode(self, cfg_output_error: OutputErrorMode) -> Self {
-        let mut this = self;
-        this.cfg_output_error = cfg_output_error;
-        this
+    pub fn with_output_error_mode(mut self, output_error: config::OutputErrorMode) -> Self {
+        self.cfg.output_error = output_error;
+        self
     }
     pub fn with_debug_info(self, debug_info: DebugInfo) -> Self {
         let mut this = self;
@@ -286,9 +144,9 @@ where
         self.ip == self.instructions.len()
     }
     pub fn can_allocate_register(&self) -> bool {
-        match self.cfg_registers {
-            RegistersMode::Infinite => true,
-            RegistersMode::Finite(max_register) => self.registers.len() < max_register,
+        match self.cfg.registers {
+            config::RegistersMode::Infinite => true,
+            config::RegistersMode::Finite(max_register) => self.registers.len() < max_register,
         }
     }
     pub fn dump_state(&mut self) {
@@ -309,15 +167,17 @@ where
     }
     pub fn left(&mut self) -> Result<(), Error> {
         if self.register == 0 {
-            match self.cfg_negative_register {
-                NegativeRegisterMode::Allow => {
+            match self.cfg.negative_register {
+                config::NegativeRegisterMode::Allow => {
                     if self.can_allocate_register() {
                         self.registers.push_front(0);
                     } else {
                         return Err(self.error(ErrorType::RegisterOverallocation));
                     }
                 }
-                NegativeRegisterMode::Error => return Err(self.error(ErrorType::RegisterUnderflow)),
+                config::NegativeRegisterMode::Error => {
+                    return Err(self.error(ErrorType::RegisterUnderflow))
+                }
             }
         } else {
             self.register -= 1;
@@ -343,9 +203,11 @@ where
         *register = if let Some(result) = register.checked_add(1) {
             result
         } else {
-            match self.cfg_overflow {
-                OverflowMode::Wrap => u8::min_value(),
-                OverflowMode::Error => return Err(self.error(ErrorType::ArithmeticOverflow)),
+            match self.cfg.overflow {
+                config::OverflowMode::Wrap => u8::min_value(),
+                config::OverflowMode::Error => {
+                    return Err(self.error(ErrorType::ArithmeticOverflow))
+                }
             }
         };
         self.ip += 1;
@@ -356,9 +218,11 @@ where
         *register = if let Some(result) = register.checked_sub(1) {
             result
         } else {
-            match self.cfg_overflow {
-                OverflowMode::Wrap => u8::max_value(),
-                OverflowMode::Error => return Err(self.error(ErrorType::ArithmeticUnderflow)),
+            match self.cfg.overflow {
+                config::OverflowMode::Wrap => u8::max_value(),
+                config::OverflowMode::Error => {
+                    return Err(self.error(ErrorType::ArithmeticUnderflow))
+                }
             }
         };
         self.ip += 1;
@@ -369,10 +233,10 @@ where
         let mut data = [0];
         *register = match self.input.read_exact(&mut data) {
             Ok(()) => data[0],
-            Err(io_err) => match self.cfg_input_error {
-                InputErrorMode::Value(value) => value,
-                InputErrorMode::Unchanged => *register,
-                InputErrorMode::Error => return Err(self.error(ErrorType::Input(io_err))),
+            Err(io_err) => match self.cfg.input_error {
+                config::InputErrorMode::Value(value) => value,
+                config::InputErrorMode::Unchanged => *register,
+                config::InputErrorMode::Error => return Err(self.error(ErrorType::Input(io_err))),
             },
         };
         self.ip += 1;
@@ -381,9 +245,9 @@ where
     pub fn write(&mut self) -> Result<(), Error> {
         let register = self.registers[self.register];
         if let Err(io_err) = self.output.write_all(&[register]) {
-            match self.cfg_output_error {
-                OutputErrorMode::Ignore => {}
-                OutputErrorMode::Error => return Err(self.error(ErrorType::Output(io_err))),
+            match self.cfg.output_error {
+                config::OutputErrorMode::Ignore => {}
+                config::OutputErrorMode::Error => return Err(self.error(ErrorType::Output(io_err))),
             }
         }
         self.ip += 1;
@@ -407,8 +271,8 @@ where
                             self.ip = ip + 1;
                             return Ok(());
                         }
-                    },
-                    _ => {},
+                    }
+                    _ => {}
                 };
             }
             Err(self.error(ErrorType::MissingClosingBrace))
@@ -455,6 +319,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::super::decode;
     use super::*;
 
     fn run_program(
@@ -466,9 +331,12 @@ mod tests {
         let mut output_data = Vec::new();
         let output = std::io::Cursor::new(&mut output_data);
         let (instructions, debug_info) = if debug_info {
-            instructions_with_debug(code.chars(), dump_state)
+            decode::instructions_with_debug(code.chars(), dump_state)
         } else {
-            (instructions(code.bytes(), dump_state), Default::default())
+            (
+                decode::instructions(code.bytes(), dump_state),
+                Default::default(),
+            )
         };
         let state = State::new(&instructions, input.as_bytes(), output).with_debug_info(debug_info);
         match state.run() {

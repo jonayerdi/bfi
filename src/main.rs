@@ -1,6 +1,8 @@
-mod brainfuck;
-
 use std::io::Read;
+
+mod config;
+mod decode;
+mod state;
 
 macro_rules! error {
     ($($arg:tt)*) => ({
@@ -10,19 +12,19 @@ macro_rules! error {
 }
 
 /**
- * TODOS:
- *  - Tests
- *  - Commandline
- *  - Select input/output files, stdio
- *  - DebugInfo
-        - Compact (line lengths)
-        - Remote Debugger Protocol?
- *  - Config
- *      - NegativeRegisterMode
- *      - RegistersMode
- *      - OverflowMode
- *      - InputErrorMode
- */
+* TODOS:
+*  - Tests
+*  - Commandline
+*  - Select input/output files, stdio
+*  - DebugInfo
+       - Compact (line lengths)
+       - Remote Debugger Protocol?
+*  - Config
+*      - NegativeRegisterMode
+*      - RegistersMode
+*      - OverflowMode
+*      - InputErrorMode
+*/
 
 fn main() {
     let args = std::env::args().collect::<Vec<_>>();
@@ -39,10 +41,10 @@ fn main() {
     if let Err(io_err) = file.read_to_string(&mut code) {
         error!("IO error reading {}: {}", &args[1], io_err);
     }
-    let (instructions, debug_info) = brainfuck::instructions_with_debug(code.chars(), true);
+    let (instructions, debug_info) = decode::instructions_with_debug(code.chars(), true);
     let input = std::io::stdin();
     let output = std::io::stdout();
-    let state = brainfuck::State::new(&instructions, input, output).with_debug_info(debug_info);
+    let state = state::State::new(&instructions, input, output).with_debug_info(debug_info);
     if let Err(error) = state.run() {
         println!();
         error!("Runtime error: {}", error);
