@@ -539,7 +539,26 @@ mod tests {
 
     #[test]
     fn reverse() {
-        // TODO
+        let code = ">,[>,]<[.<]";
+        let inputs = [
+            "hello",
+            "-> hello world! <-",
+            "",
+            "123\n456",
+            "123\n\r456",
+            "سلام دنیا",
+            "안녕 세상",
+            "\r\n\thél\\lo",
+        ];
+        for input in inputs.iter() {
+            match run_program(code, *input, false, false) {
+                Ok(output) => assert_eq!(
+                    input.as_bytes().iter().collect::<Vec<_>>(),
+                    output.iter().rev().collect::<Vec<_>>()
+                ),
+                Err(error) => panic!("{}", error),
+            }
+        }
     }
 
     #[test]

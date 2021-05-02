@@ -11,8 +11,12 @@ macro_rules! error {
 
 /**
  * TODOS:
- *  - Select input/output files
+ *  - Tests
+ *  - Commandline
+ *  - Select input/output files, stdio
  *  - DebugInfo
+        - Compact (line lengths)
+        - Remote Debugger Protocol?
  *  - Config
  *      - NegativeRegisterMode
  *      - RegistersMode
